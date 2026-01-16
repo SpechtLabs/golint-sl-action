@@ -1,0 +1,119 @@
+name: 'GoLint SpechtLabs'
+description: 'Run golint-sl - SpechtLabs best practices for Go code quality, safety, and architecture'
+author: 'SpechtLabs'
+
+branding:
+  icon: 'check-circle'
+  color: 'blue'
+
+inputs:
+  version:
+    description: 'Version of golint-sl to use (default: latest)'
+    required: false
+    default: 'latest'
+  
+  working-directory:
+    description: 'Working directory to run the linter in'
+    required: false
+    default: '.'
+  
+  args:
+    description: 'Additional arguments to pass to golint-sl'
+    required: false
+    default: './...'
+  
+  analyzers:
+    description: 'Specific analyzers to run (comma-separated, e.g., "nilcheck,errorwrap"). Empty means all.'
+    required: false
+    default: ''
+  
+  fail-on-error:
+    description: 'Fail the action if linting errors are found'
+    required: false
+    default: 'true'
+
+  github-token:
+    description: 'GitHub token for API access (used for PR annotations)'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  exit-code:
+    description: 'Exit code from golint-sl'
+    value: ${{ steps.lint.outputs.exit-code }}
+  
+  issues-count:
+    description: 'Number of issues found'
+    value: ${{ steps.lint.outputs.issues-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+        cache: false
+
+    - name: Install golint-sl
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+        else
+          go install github.com/spechtlabs/golint-sl/cmd/golint-sl@${{ inputs.version }}
+        fi
+
+    - name: Run golint-sl
+      id: lint
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set +e
+        
+        # Build analyzer flags if specific analyzers requested
+        ANALYZER_FLAGS=""
+        if [ -n "${{ inputs.analyzers }}" ]; then
+          IFS=',' read -ra ANALYZERS <<< "${{ inputs.analyzers }}"
+          for analyzer in "${ANALYZERS[@]}"; do
+            ANALYZER_FLAGS="$ANALYZER_FLAGS -${analyzer// /}"
+          done
+        fi
+        
+        # Run linter and capture output
+        OUTPUT=$(golint-sl $ANALYZER_FLAGS ${{ inputs.args }} 2>&1)
+        EXIT_CODE=$?
+        
+        # Count issues (lines starting with /)
+        ISSUES_COUNT=$(echo "$OUTPUT" | grep -c "^/" || echo "0")
+        
+        echo "exit-code=$EXIT_CODE" >> $GITHUB_OUTPUT
+        echo "issues-count=$ISSUES_COUNT" >> $GITHUB_OUTPUT
+        
+        # Output results
+        if [ -n "$OUTPUT" ]; then
+          echo "## GoLint SpechtLabs Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Found **$ISSUES_COUNT** issues" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$OUTPUT" | head -50 >> $GITHUB_STEP_SUMMARY
+          if [ $(echo "$OUTPUT" | wc -l) -gt 50 ]; then
+            echo "... (truncated, showing first 50 issues)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "$OUTPUT"
+        else
+          echo "## GoLint SpechtLabs Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ No issues found!" >> $GITHUB_STEP_SUMMARY
+          echo "✅ No issues found!"
+        fi
+        
+        # Exit with error if configured and issues found
+        if [ "${{ inputs.fail-on-error }}" = "true" ] && [ $EXIT_CODE -ne 0 ]; then
+          exit $EXIT_CODE
+        fi
+        
+        exit 0
